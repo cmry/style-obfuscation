@@ -1,4 +1,5 @@
 
+import copy
 import random
 
 from torch import optim
@@ -14,7 +15,7 @@ from utils import make_early_stopping_hook
 
 
 def report(trainer, items):
-    dataset, d = trainer.datasets['valid'], trainer.model.decoder.embeddings.d
+    dataset, d = trainer.datasets['valid'], trainer.model.encoder.embeddings.d
     # sample batch
     batch, _ = dataset[random.randint(0, len(dataset) - 1)]
 
@@ -37,8 +38,8 @@ def report(trainer, items):
 
 
 def conditional_report(trainer, items):
-    dataset = trainer.datasets['valid']
-    d, conds_d = trainer.datasets['train'].d['trg']
+    dataset, d = trainer.datasets['valid'], trainer.model.encoder.embeddings.d
+    _, conds_d = trainer.datasets['train'].d['trg']
     # sample batch
     _, ((inp, lengths), *conds) = dataset[random.randint(0, len(dataset) - 1)]
 
@@ -75,6 +76,7 @@ if __name__ == '__main__':
                         'style-obfuscation/data/bibles/')
     parser.add_argument('--max_size', type=int, default=100000)
     parser.add_argument('--max_length', type=int, default=100)
+    parser.add_argument('--max_lines', type=int, default=1000000)
     # model
     parser.add_argument('--grl', action='store_true')
     parser.add_argument('--emb_dim', type=int, default=300)
@@ -97,7 +99,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr_schedule_epochs', type=int, default=1)
     parser.add_argument('--lr_schedule_factor', type=float, default=0.75)
     parser.add_argument('--max_norm', type=float, default=5.)
-    parser.add_argument('--patience', default=3, type=int)
+    parser.add_argument('--patience', default=2, type=int)
     parser.add_argument('--epochs', type=int, default=25)
     parser.add_argument('--batch_size', type=int, default=50)
     parser.add_argument('--device', default='cpu')
@@ -107,13 +109,14 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     print("Loading data...")
-    train_conds, train = zip(*load_sents(args.basedir, 'train'))
+    train_conds, train = zip(*load_sents(args.basedir, 'train', max_lines=args.max_lines))
     train_conds, train = list(train_conds), list(train)
-    d = Dict(
+    d1 = Dict(
         eos_token=u.EOS, bos_token=u.BOS, unk_token=u.UNK,
-        pad_token=u.PAD, max_size=args.max_size, force_unk=True,
-        align_right=args.reverse
+        pad_token=u.PAD, max_size=args.max_size, force_unk=True
     ).fit(train)
+    d2 = copy.deepcopy(d1)
+    d2.align_right = args.reverse
     conds_d = Dict(sequential=False).fit(train_conds)
 
     conditional = args.cond_emb > 0
@@ -121,23 +124,24 @@ if __name__ == '__main__':
     # AE+GRL+C
     if args.grl and conditional:
         src, trg = (train, train_conds), (train, train_conds)
-        dicts = {'src': (d, conds_d), 'trg': (d, conds_d)}
+        dicts = {'src': (d1, conds_d), 'trg': (d2, conds_d)}
     # AE+GRL
     elif args.grl:
         src, trg = (train, train_conds), train
-        dicts = {'src': (d, conds_d), 'trg': d}
+        dicts = {'src': (d1, conds_d), 'trg': d2}
     # AE+C
     elif conditional:
         src, trg = train, (train, train_conds)
-        dicts = {'src': d, 'trg': (d, conds_d)}
+        dicts = {'src': d1, 'trg': (d2, conds_d)}
     # AE
     else:
-        src, trg = train, None
-        dicts = {'src': d}
+        src, trg = train, train
+        dicts = {'src': d1, 'trg': d2}
 
-    train, valid = PairedDataset(
-        src, trg, dicts, batch_size=args.batch_size, device=args.device
-    ).splits(test=None, dev=0.2)
+    train = PairedDataset(
+        src, trg, dicts, batch_size=args.batch_size, device=args.device)
+    train.shuffle_()
+    train, valid = train.splits(test=None, dev=0.05)
 
     def key(it): return len(it[0]) if conditional else len(it)
 
@@ -150,7 +154,7 @@ if __name__ == '__main__':
     print("Building model...")
     if args.grl:
         m = make_grl_rnn_encoder_decoder(
-            args.num_layers, args.emb_dim, args.hid_dim, d, cell=args.cell,
+            args.num_layers, args.emb_dim, args.hid_dim, d1, cell=args.cell,
             encoder_summary=args.encoder_summary, dropout=args.dropout,
             tie_weights=True, word_dropout=args.word_dropout,
             cond_dims=cond_dims, cond_vocabs=cond_vocabs,
@@ -158,11 +162,12 @@ if __name__ == '__main__':
             train_init=args.train_init, reverse=args.reverse)
 
         # don't rely on GRL for early stopping (set its weight to 0)
-        losses, weights = ('ppl', 'grl'), {'ppl': 1, 'grl': 0}
+        losses = ('ppl', {'loss': 'grl', 'format': 'ppl'})
+        weights = {'ppl': 1, 'grl': 0}
 
     else:
         m = make_rnn_encoder_decoder(
-            args.num_layers, args.emb_dim, args.hid_dim, d, cell=args.cell,
+            args.num_layers, args.emb_dim, args.hid_dim, d1, cell=args.cell,
             encoder_summary=args.encoder_summary, dropout=args.dropout,
             tie_weights=True, word_dropout=args.word_dropout,
             reuse_hidden=False, input_feed=False, att_type=None,
@@ -200,7 +205,7 @@ if __name__ == '__main__':
     if args.patience:
         early_stopping = EarlyStopping(args.patience)
         trainer.add_hook(
-            make_early_stopping_hook(early_stopping), hooks_per_epoch=2)
+            make_early_stopping_hook(early_stopping), hooks_per_epoch=args.hook)
 
     # - print hook
     trainer.add_hook(

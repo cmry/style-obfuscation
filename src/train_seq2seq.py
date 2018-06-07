@@ -14,7 +14,7 @@ from utils import make_early_stopping_hook
 
 
 def report(trainer, items):
-    dataset, d = trainer.datasets['valid'], trainer.model.decoder.embeddings.d
+    dataset, d = trainer.datasets['valid'], trainer.model.encoder.embeddings.d
     # sample batch
     batch = dataset[random.randint(0, len(dataset) - 1)]
 
@@ -52,6 +52,7 @@ if __name__ == '__main__':
     parser.add_argument('--basedir', default='/home/manjavacas/code/python/' +
                         'style-obfuscation/data/bibles/')
     parser.add_argument('--max_size', type=int, default=100000)
+    parser.add_argument('--max_lines', type=int, default=1000000)
     # model
     parser.add_argument('--grl', action='store_true')
     parser.add_argument('--tt', action='store_true')
@@ -78,7 +79,7 @@ if __name__ == '__main__':
                         'glove.twitter.27B.100d.txt')
     parser.add_argument('--dropout', default=0.25, type=float)
     parser.add_argument('--word_dropout', default=0.0, type=float)
-    parser.add_argument('--patience', default=0, type=int)
+    parser.add_argument('--patience', default=2, type=int)
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--checkpoint', default=100, type=int)
     parser.add_argument('--hook', default=1, type=int)
@@ -87,40 +88,39 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     print("Loading data...")
-    max_size, tokenize = args.max_size, True
-
     src, src_conds, trg, trg_conds = \
-        zip(*load_pairs(args.basedir, 'train', tt=args.tt))
+        zip(*load_pairs(args.basedir, 'train', tt=args.tt, max_lines=args.max_lines))
     src, src_conds = list(src), list(src_conds)
     trg, trg_conds = list(trg), list(trg_conds)
 
-    conds_d = Dict(sequential=False).fit(src_conds, trg_conds)
-    d = Dict(
+    d1 = Dict(
         eos_token=u.EOS, bos_token=u.BOS, unk_token=u.UNK,
-        pad_token=u.PAD, max_size=max_size, force_unk=True,
-        align_right=args.reverse
+        pad_token=u.PAD, max_size=args.max_size, force_unk=True,
     ).fit(src, trg)
+    d2 = copy.deepcopy(d1)
+    d2.align_right = args.reverse
+    conds_d = Dict(sequential=False).fit(src_conds, trg_conds)
 
     # S2S+GRL
     if args.grl:
         if args.tt:
             raise ValueError("GRL+TT doesn't quite make sense")
         src, trg = (src, src_conds), trg
-        dicts = {'src': (d, conds_d), 'trg': d}
+        dicts = {'src': (d1, conds_d), 'trg': d2}
     # S2S or TT
     else:
-        dicts = {'src': d, 'trg': d}
+        dicts = {'src': d1, 'trg': d2}
 
     train, valid = PairedDataset(
         src, trg, dicts, batch_size=args.batch_size, device=args.device
-    ).splits(test=None, dev=0.2)
+    ).splits(test=None, dev=0.05)
 
     train.sort_(sort_by='trg')  # minimize padding
 
     print("Building model...")
     if args.grl:
         m = make_grl_rnn_encoder_decoder(
-            args.layers, args.emb_dim, args.hid_dim, d, cell=args.cell,
+            args.layers, args.emb_dim, args.hid_dim, d1, cell=args.cell,
             encoder_summary=args.encoder_summary, dropout=args.dropout,
             tie_weights=True, word_dropout=args.word_dropout,
             cond_dims=(args.emb_dim,), cond_vocabs=(len(conds_d),),
@@ -128,11 +128,12 @@ if __name__ == '__main__':
             train_init=args.train_init, reverse=args.reverse)
 
         # don't rely on GRL for early stopping (set its weight to 0)
-        losses, weights = ('ppl', 'grl'), {'ppl': 1, 'grl': 0}
+        losses = ('ppl', {'loss': 'grl', 'format': 'ppl'})
+        weights = {'ppl': 1, 'grl': 0}
 
     else:
         m = make_rnn_encoder_decoder(
-            args.layers, args.emb_dim, args.hid_dim, d, cell=args.cell,
+            args.layers, args.emb_dim, args.hid_dim, d1, cell=args.cell,
             encoder_summary=args.encoder_summary, dropout=args.dropout,
             tie_weights=True, word_dropout=args.word_dropout,
             att_type=args.att_type,
