@@ -16,11 +16,12 @@ from utils import make_early_stopping_hook
 def report(trainer, items):
     dataset, d = trainer.datasets['valid'], trainer.model.decoder.embeddings.d
     # sample batch
-    batch = dataset[random.randint(0, len(dataset) - 1)]
+    batch, _ = dataset[random.randint(0, len(dataset) - 1)]
 
+    # drop off condition
     if trainer.model.encoder.conditional:
-        inp, _ = batch          # drop off condition
-    inp, lengths = inp
+        batch, _ = batch
+    inp, lengths = batch
 
     # only take so many inputs
     inp, lengths = inp[:, :items], lengths[:items]
@@ -36,19 +37,18 @@ def report(trainer, items):
 
 
 def conditional_report(trainer, items):
-    dataset, d = trainer.datasets['valid'], trainer.model.decoder.embeddings.d
+    dataset = trainer.datasets['valid']
+    d, conds_d = trainer.datasets['train'].d['trg']
     # sample batch
-    batch = dataset[random.randint(0, len(dataset) - 1)]
-
-    _, ((inp, lengths), conds) = batch
-    _, conds_d = trainer.datasets['train'].d['src']  # styles dictionary
+    _, ((inp, lengths), *conds) = dataset[random.randint(0, len(dataset) - 1)]
 
     # only take so many inputs
-    inp, inp, conds = inp[:, :items], lengths[:items], conds[:items]
-    scores, hyps = trainer.model.translate_beam(inp, lengths, conds=conds)
+    inp, lengths, conds = inp[:, :items], lengths[:items], [c[:items] for c in conds]
+    scores, hyps, _ = trainer.model.translate_beam(inp, lengths, conds=conds)
 
     trg = inp.transpose(0, 1).tolist()
-    conds = [conds_d.vocab[c] for c in conds.tolist()]
+    conds = ['+'.join([conds_d.vocab[cond[b]] for cond in conds])
+             for b in range(len(trg))]
 
     report = ''
     for score, hyp, trg, cond in zip(scores, hyps, trg, conds):
@@ -77,46 +77,46 @@ if __name__ == '__main__':
     parser.add_argument('--max_length', type=int, default=100)
     # model
     parser.add_argument('--grl', action='store_true')
-    parser.add_argument('--emb_dim', type=int, default=100)
-    parser.add_argument('--hid_dim', type=int, default=200)
+    parser.add_argument('--emb_dim', type=int, default=300)
+    parser.add_argument('--hid_dim', type=int, default=1000)
     parser.add_argument('--num_layers', type=int, default=1)
     parser.add_argument('--cell', default='LSTM')
     parser.add_argument('--encoder_summary', default='inner-attention')
-    parser.add_argument('--cond_emb', type=int, default=40)
+    parser.add_argument('--cond_emb', type=int, default=0)
     parser.add_argument('--train_init', action='store_true')
-    parser.add_argument('--cond_layers', type=int, default=0)
     parser.add_argument('--init_embeddings', action='store_true')
     parser.add_argument('--embeddings_path',
                         default='/home/corpora/word_embeddings/' +
                         'glove.twitter.27B.100d.txt')
     parser.add_argument('--reverse', action='store_true')
     # training
-    parser.add_argument('--dropout', type=float, default=0.3)
+    parser.add_argument('--dropout', type=float, default=0.25)
     parser.add_argument('--word_dropout', type=float, default=0.0)
     parser.add_argument('--optimizer', default='Adam')
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--lr_schedule_epochs', type=int, default=1)
-    parser.add_argument('--lr_schedule_factor', type=float, default=1)
+    parser.add_argument('--lr_schedule_factor', type=float, default=0.75)
     parser.add_argument('--max_norm', type=float, default=5.)
-    parser.add_argument('--patience', default=0, type=int)
+    parser.add_argument('--patience', default=3, type=int)
     parser.add_argument('--epochs', type=int, default=25)
-    parser.add_argument('--batch_size', type=int, default=100)
+    parser.add_argument('--batch_size', type=int, default=50)
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--checkpoint', type=int, default=100)
-    parser.add_argument('--hook', type=int, default=1000)
+    parser.add_argument('--hook', type=int, default=1)
     parser.add_argument('--test', action='store_true')
     args = parser.parse_args()
 
     print("Loading data...")
-    train_conds, train = zip(*load_sents(args.basedir, 'test'))
+    train_conds, train = zip(*load_sents(args.basedir, 'train'))
     train_conds, train = list(train_conds), list(train)
     d = Dict(
         eos_token=u.EOS, bos_token=u.BOS, unk_token=u.UNK,
-        pad_token=u.PAD, max_size=args.max_size, force_unk=True
+        pad_token=u.PAD, max_size=args.max_size, force_unk=True,
+        align_right=args.reverse
     ).fit(train)
     conds_d = Dict(sequential=False).fit(train_conds)
 
-    conditional = args.cond_layers > 0
+    conditional = args.cond_emb > 0
 
     # AE+GRL+C
     if args.grl and conditional:
@@ -138,6 +138,10 @@ if __name__ == '__main__':
     train, valid = PairedDataset(
         src, trg, dicts, batch_size=args.batch_size, device=args.device
     ).splits(test=None, dev=0.2)
+
+    def key(it): return len(it[0]) if conditional else len(it)
+
+    train.sort_(sort_by='trg', key=key)
 
     cond_dims, cond_vocabs = None, None
     if conditional or args.grl:
@@ -185,7 +189,7 @@ if __name__ == '__main__':
     model_name = 'AE.GRL{}.C{}'.format(str(args.grl), str(conditional))
     trainer = Trainer(
         m, {'train': train, 'valid': valid}, optimizer, losses=losses,
-        scheduler=scheduler, max_norm=args.max_norm, weights=weights,
+        max_norm=args.max_norm, scheduler=scheduler, weights=weights,
         checkpoint=Checkpoint(model_name, keep=3).setup(args, d=conds_d))
 
     trainer.add_loggers(StdLogger())
@@ -196,11 +200,11 @@ if __name__ == '__main__':
     if args.patience:
         early_stopping = EarlyStopping(args.patience)
         trainer.add_hook(
-            make_early_stopping_hook(early_stopping), hooks_per_epoch=4)
+            make_early_stopping_hook(early_stopping), hooks_per_epoch=2)
 
     # - print hook
     trainer.add_hook(
-        make_report_hook(valid, args.batch_size, args.grl), hooks_per_epoch=1)
+        make_report_hook(valid, 5, conditional), hooks_per_epoch=args.hook)
 
     (best_model, valid_loss), test_loss = trainer.train(
         args.epochs, args.checkpoint, shuffle=True)

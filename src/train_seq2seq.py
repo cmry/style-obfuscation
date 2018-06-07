@@ -81,7 +81,7 @@ if __name__ == '__main__':
     parser.add_argument('--patience', default=0, type=int)
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--checkpoint', default=100, type=int)
-    parser.add_argument('--hooks_per_epoch', default=2, type=int)
+    parser.add_argument('--hook', default=1, type=int)
     parser.add_argument('--test', action='store_true', help="Don't save")
     parser.add_argument('--reverse', action='store_true')
     args = parser.parse_args()
@@ -90,14 +90,15 @@ if __name__ == '__main__':
     max_size, tokenize = args.max_size, True
 
     src, src_conds, trg, trg_conds = \
-        zip(*load_pairs(args.basedir, 'test', tt=args.tt))
+        zip(*load_pairs(args.basedir, 'train', tt=args.tt))
     src, src_conds = list(src), list(src_conds)
     trg, trg_conds = list(trg), list(trg_conds)
 
     conds_d = Dict(sequential=False).fit(src_conds, trg_conds)
     d = Dict(
         eos_token=u.EOS, bos_token=u.BOS, unk_token=u.UNK,
-        pad_token=u.PAD, max_size=max_size, force_unk=True
+        pad_token=u.PAD, max_size=max_size, force_unk=True,
+        align_right=args.reverse
     ).fit(src, trg)
 
     # S2S+GRL
@@ -113,6 +114,8 @@ if __name__ == '__main__':
     train, valid = PairedDataset(
         src, trg, dicts, batch_size=args.batch_size, device=args.device
     ).splits(test=None, dev=0.2)
+
+    train.sort_(sort_by='trg')  # minimize padding
 
     print("Building model...")
     if args.grl:
@@ -170,11 +173,11 @@ if __name__ == '__main__':
     if args.patience:
         early_stopping = EarlyStopping(args.patience)
         trainer.add_hook(
-            make_early_stopping_hook(early_stopping), hooks_per_epoch=4)
+            make_early_stopping_hook(early_stopping), hooks_per_epoch=2)
 
     # - print hook
     trainer.add_hook(
-        make_report_hook(valid, args.batch_size), hooks_per_epoch=args.hooks_per_epoch)
+        make_report_hook(valid, args.batch_size), hooks_per_epoch=args.hook)
 
     (best_model, valid_loss), test_loss = trainer.train(
         args.epochs, args.checkpoint, shuffle=True)
