@@ -159,9 +159,8 @@ if __name__ == '__main__':
     ).shuffle_()
     train, valid = train.splits(test=None, dev=0.2)
 
-    # key = lambda it: len(it[0]) if conditional else len(it)
-    # train.sort_(sort_by='trg', key=key)
-    # # obfuscation runs sorted
+    key = lambda it: len(it[0]) if conditional else len(it)
+    train.sort_(sort_by='trg', key=key)
 
     cond_dims, cond_vocabs = None, None
     if conditional or args.grl:
