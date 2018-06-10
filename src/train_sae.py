@@ -2,6 +2,7 @@
 import copy
 import random
 
+import torch
 from torch import optim
 
 from seqmod.modules.encoder_decoder import make_grl_rnn_encoder_decoder
@@ -11,23 +12,26 @@ from seqmod.misc.loggers import StdLogger
 from seqmod import utils as u
 
 from data import load_sents
-from utils import make_early_stopping_hook
+from utils import make_check_hook
 
 
 def report(trainer, items):
     dataset, d = trainer.datasets['valid'], trainer.model.encoder.embeddings.d
     # sample batch
-    batch, _ = dataset[random.randint(0, len(dataset) - 1)]
+    inp, _ = dataset[random.randint(0, len(dataset) - 1)]
 
     # drop off condition
     if trainer.model.encoder.conditional:
-        batch, _ = batch
-    inp, lengths = batch
+        inp, _ = inp
+    inp, lengths = inp
 
     # only take so many inputs
     inp, lengths = inp[:, :items], lengths[:items]
+
+    # run
     scores, hyps, _ = trainer.model.translate_beam(inp, lengths)
 
+    # stringify output
     trg = inp.transpose(0, 1).tolist()
 
     report = ''
@@ -41,15 +45,27 @@ def conditional_report(trainer, items):
     dataset, d = trainer.datasets['valid'], trainer.model.encoder.embeddings.d
     _, conds_d = trainer.datasets['train'].d['trg']
     # sample batch
-    _, ((inp, lengths), *conds) = dataset[random.randint(0, len(dataset) - 1)]
+    inp, (_, *conds) = dataset[random.randint(0, len(dataset) - 1)]
+
+    # drop off condition from encoder
+    if trainer.model.encoder.conditional:
+        inp, _ = inp
+    inp, lengths = inp
 
     # only take so many inputs
     inp, lengths, conds = inp[:, :items], lengths[:items], [c[:items] for c in conds]
-    scores, hyps, _ = trainer.model.translate_beam(inp, lengths, conds=conds)
 
+    # resample conds
+    tconds = [torch.zeros_like(c).random_(len(conds_d)) for c in conds]
+
+    # run
+    scores, hyps, _ = trainer.model.translate_beam(inp, lengths, conds=tconds)
+
+    # stringify output
     trg = inp.transpose(0, 1).tolist()
-    conds = ['+'.join([conds_d.vocab[cond[b]] for cond in conds])
-             for b in range(len(trg))]
+    conds = ['+'.join([conds_d.vocab[c[b]] for c in conds]) for b in range(len(trg))]
+    tconds = ['+'.join([conds_d.vocab[c[b]] for c in tconds]) for b in range(len(trg))]
+    conds = ['<{}>=>{}>'.format(c, tc) for c, tc in zip(conds, tconds)]
 
     report = ''
     for score, hyp, trg, cond in zip(scores, hyps, trg, conds):
@@ -90,8 +106,8 @@ if __name__ == '__main__':
     parser.add_argument('--embeddings_path',
                         default='/home/corpora/word_embeddings/' +
                         'glove.twitter.27B.100d.txt')
-    parser.add_argument('--reverse', action='store_true')
     # training
+    parser.add_argument('--reverse', action='store_true')
     parser.add_argument('--dropout', type=float, default=0.25)
     parser.add_argument('--word_dropout', type=float, default=0.0)
     parser.add_argument('--optimizer', default='Adam')
@@ -111,11 +127,11 @@ if __name__ == '__main__':
     print("Loading data...")
     train_conds, train = zip(*load_sents(args.basedir, 'train', max_lines=args.max_lines))
     train_conds, train = list(train_conds), list(train)
-    d1 = Dict(
+    d = Dict(
         eos_token=u.EOS, bos_token=u.BOS, unk_token=u.UNK,
         pad_token=u.PAD, max_size=args.max_size, force_unk=True
     ).fit(train)
-    d2 = copy.deepcopy(d1)
+    d2 = copy.deepcopy(d)
     d2.align_right = args.reverse
     conds_d = Dict(sequential=False).fit(train_conds)
 
@@ -124,28 +140,28 @@ if __name__ == '__main__':
     # AE+GRL+C
     if args.grl and conditional:
         src, trg = (train, train_conds), (train, train_conds)
-        dicts = {'src': (d1, conds_d), 'trg': (d2, conds_d)}
+        dicts = {'src': (d, conds_d), 'trg': (d2, conds_d)}
     # AE+GRL
     elif args.grl:
         src, trg = (train, train_conds), train
-        dicts = {'src': (d1, conds_d), 'trg': d2}
+        dicts = {'src': (d, conds_d), 'trg': d2}
     # AE+C
     elif conditional:
         src, trg = train, (train, train_conds)
-        dicts = {'src': d1, 'trg': (d2, conds_d)}
+        dicts = {'src': d, 'trg': (d2, conds_d)}
     # AE
     else:
         src, trg = train, train
-        dicts = {'src': d1, 'trg': d2}
+        dicts = {'src': d, 'trg': d2}
 
     train = PairedDataset(
-        src, trg, dicts, batch_size=args.batch_size, device=args.device)
-    train.shuffle_()
-    train, valid = train.splits(test=None, dev=0.05)
+        src, trg, dicts, batch_size=args.batch_size, device=args.device
+    ).shuffle_()
+    train, valid = train.splits(test=None, dev=0.2)
 
-    def key(it): return len(it[0]) if conditional else len(it)
-
-    train.sort_(sort_by='trg', key=key)
+    # key = lambda it: len(it[0]) if conditional else len(it)
+    # train.sort_(sort_by='trg', key=key)
+    # # obfuscation runs sorted
 
     cond_dims, cond_vocabs = None, None
     if conditional or args.grl:
@@ -154,11 +170,11 @@ if __name__ == '__main__':
     print("Building model...")
     if args.grl:
         m = make_grl_rnn_encoder_decoder(
-            args.num_layers, args.emb_dim, args.hid_dim, d1, cell=args.cell,
+            args.num_layers, args.emb_dim, args.hid_dim, d, cell=args.cell,
             encoder_summary=args.encoder_summary, dropout=args.dropout,
             tie_weights=True, word_dropout=args.word_dropout,
             cond_dims=cond_dims, cond_vocabs=cond_vocabs,
-            conditional_decoder=conditional,
+            conditional_decoder=conditional, add_init_jitter=True,
             train_init=args.train_init, reverse=args.reverse)
 
         # don't rely on GRL for early stopping (set its weight to 0)
@@ -167,12 +183,13 @@ if __name__ == '__main__':
 
     else:
         m = make_rnn_encoder_decoder(
-            args.num_layers, args.emb_dim, args.hid_dim, d1, cell=args.cell,
+            args.num_layers, args.emb_dim, args.hid_dim, d, cell=args.cell,
             encoder_summary=args.encoder_summary, dropout=args.dropout,
             tie_weights=True, word_dropout=args.word_dropout,
             reuse_hidden=False, input_feed=False, att_type=None,
             cond_dims=cond_dims, cond_vocabs=cond_vocabs,
-            train_init=args.train_init, reverse=args.reverse)
+            add_init_jitter=True, train_init=args.train_init,
+            reverse=args.reverse)
 
         losses, weights = ('ppl',), None
 
@@ -194,22 +211,26 @@ if __name__ == '__main__':
     model_name = 'AE.GRL{}.C{}'.format(str(args.grl), str(conditional))
     trainer = Trainer(
         m, {'train': train, 'valid': valid}, optimizer, losses=losses,
-        max_norm=args.max_norm, scheduler=scheduler, weights=weights,
-        checkpoint=Checkpoint(model_name, keep=3).setup(args, d=conds_d))
+        max_norm=args.max_norm, scheduler=scheduler, weights=weights)
 
     trainer.add_loggers(StdLogger())
 
     # Hooks
-    # - early stopping
+    # - early stopping & checkpoint
     early_stopping = None
     if args.patience:
         early_stopping = EarlyStopping(args.patience)
-        trainer.add_hook(
-            make_early_stopping_hook(early_stopping), hooks_per_epoch=args.hook)
+    checkpoint = None
+    if not args.test:
+        checkpoint = Checkpoint(model_name, keep=3).setup(args, d=conds_d)
+    trainer.add_hook(make_check_hook(early_stopping, checkpoint),
+                     hooks_per_epoch=args.hook)
 
     # - print hook
     trainer.add_hook(
         make_report_hook(valid, 5, conditional), hooks_per_epoch=args.hook)
 
-    (best_model, valid_loss), test_loss = trainer.train(
+    (best_model, valid_loss), _ = trainer.train(
         args.epochs, args.checkpoint, shuffle=True)
+    if not args.test:
+        checkpoint.save(best_model, valid_loss)

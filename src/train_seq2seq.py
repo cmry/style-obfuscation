@@ -10,7 +10,7 @@ from seqmod.misc.loggers import StdLogger
 from seqmod import utils as u
 
 from data import load_pairs
-from utils import make_early_stopping_hook
+from utils import make_check_hook
 
 
 def report(trainer, items):
@@ -84,7 +84,6 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default=100, type=int)
     parser.add_argument('--hook', default=1, type=int)
     parser.add_argument('--test', action='store_true', help="Don't save")
-    parser.add_argument('--reverse', action='store_true')
     args = parser.parse_args()
 
     print("Loading data...")
@@ -93,12 +92,10 @@ if __name__ == '__main__':
     src, src_conds = list(src), list(src_conds)
     trg, trg_conds = list(trg), list(trg_conds)
 
-    d1 = Dict(
+    d = Dict(
         eos_token=u.EOS, bos_token=u.BOS, unk_token=u.UNK,
         pad_token=u.PAD, max_size=args.max_size, force_unk=True,
     ).fit(src, trg)
-    d2 = copy.deepcopy(d1)
-    d2.align_right = args.reverse
     conds_d = Dict(sequential=False).fit(src_conds, trg_conds)
 
     # S2S+GRL
@@ -106,10 +103,10 @@ if __name__ == '__main__':
         if args.tt:
             raise ValueError("GRL+TT doesn't quite make sense")
         src, trg = (src, src_conds), trg
-        dicts = {'src': (d1, conds_d), 'trg': d2}
+        dicts = {'src': (d, conds_d), 'trg': d}
     # S2S or TT
     else:
-        dicts = {'src': d1, 'trg': d2}
+        dicts = {'src': d, 'trg': d}
 
     train, valid = PairedDataset(
         src, trg, dicts, batch_size=args.batch_size, device=args.device
@@ -124,8 +121,7 @@ if __name__ == '__main__':
             encoder_summary=args.encoder_summary, dropout=args.dropout,
             tie_weights=True, word_dropout=args.word_dropout,
             cond_dims=(args.emb_dim,), cond_vocabs=(len(conds_d),),
-            conditional_decoder=False,
-            train_init=args.train_init, reverse=args.reverse)
+            conditional_decoder=False, train_init=args.train_init)
 
         # don't rely on GRL for early stopping (set its weight to 0)
         losses = ('ppl', {'loss': 'grl', 'format': 'ppl'})
@@ -141,7 +137,7 @@ if __name__ == '__main__':
             reuse_hidden=args.encoder_summary == 'full',
             # only do input feeding for attentional models
             input_feed=args.att_type.lower() != 'none',
-            train_init=args.train_init, reverse=args.reverse)
+            train_init=args.train_init)
 
         losses, weights = ('ppl',), None
 
@@ -169,16 +165,21 @@ if __name__ == '__main__':
     trainer.add_loggers(StdLogger())
 
     # Hooks
-    # - early stopping
+    # - early stopping & checkpoint
     early_stopping = None
     if args.patience:
         early_stopping = EarlyStopping(args.patience)
-        trainer.add_hook(
-            make_early_stopping_hook(early_stopping), hooks_per_epoch=2)
+    checkpoint = None
+    if not args.test:
+        checkpoint = Checkpoint(model_name, keep=3).setup(args, d=conds_d)
+    trainer.add_hook(make_check_hook(early_stopping, checkpoint),
+                     hooks_per_epoch=args.hook)
 
     # - print hook
     trainer.add_hook(
         make_report_hook(valid, args.batch_size), hooks_per_epoch=args.hook)
 
-    (best_model, valid_loss), test_loss = trainer.train(
+    (best_model, valid_loss), _ = trainer.train(
         args.epochs, args.checkpoint, shuffle=True)
+    if not args.test:
+        checkpoint.save(best_model, valid_loss)

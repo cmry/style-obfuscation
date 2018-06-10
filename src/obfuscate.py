@@ -82,7 +82,7 @@ if __name__ == '__main__':
 
             conds = None
             if model.decoder.conditional:
-                conds = [conds_d.pack(trg_conds)]
+                conds = [conds_d.pack(list(conds_d.transform(trg_cond)))]
 
             on_init_state = None
             if args.stddev > 0:
