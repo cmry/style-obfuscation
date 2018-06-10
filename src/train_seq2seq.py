@@ -66,6 +66,7 @@ if __name__ == '__main__':
     parser.add_argument('--train_init', action='store_true')
     parser.add_argument('--encoder_summary', default='inner-attention')
     # training
+    parser.add_argument('--reverse', action='store_true')
     parser.add_argument('--epochs', default=5, type=int)
     parser.add_argument('--batch_size', default=200, type=int)
     parser.add_argument('--optim', default='Adam', type=str)
@@ -96,6 +97,8 @@ if __name__ == '__main__':
         eos_token=u.EOS, bos_token=u.BOS, unk_token=u.UNK,
         pad_token=u.PAD, max_size=args.max_size, force_unk=True,
     ).fit(src, trg)
+    d2 = copy.deepcopy(d)
+    d2.align_right = args.reverse
     conds_d = Dict(sequential=False).fit(src_conds, trg_conds)
 
     # S2S+GRL
@@ -103,14 +106,15 @@ if __name__ == '__main__':
         if args.tt:
             raise ValueError("GRL+TT doesn't quite make sense")
         src, trg = (src, src_conds), trg
-        dicts = {'src': (d, conds_d), 'trg': d}
+        dicts = {'src': (d, conds_d), 'trg': d2}
     # S2S or TT
     else:
-        dicts = {'src': d, 'trg': d}
+        dicts = {'src': d, 'trg': d2}
 
-    train, valid = PairedDataset(
+    train = PairedDataset(
         src, trg, dicts, batch_size=args.batch_size, device=args.device
-    ).splits(test=None, dev=0.05)
+    ).shuffle_()
+    train, valid = splits(test=None, dev=0.2)
 
     train.sort_(sort_by='trg')  # minimize padding
 
@@ -121,7 +125,8 @@ if __name__ == '__main__':
             encoder_summary=args.encoder_summary, dropout=args.dropout,
             tie_weights=True, word_dropout=args.word_dropout,
             cond_dims=(args.emb_dim,), cond_vocabs=(len(conds_d),),
-            conditional_decoder=False, train_init=args.train_init)
+            conditional_decoder=False, train_init=args.train_init,
+            reverse=args.reverse)
 
         # don't rely on GRL for early stopping (set its weight to 0)
         losses = ('ppl', {'loss': 'grl', 'format': 'ppl'})
@@ -137,7 +142,7 @@ if __name__ == '__main__':
             reuse_hidden=args.encoder_summary == 'full',
             # only do input feeding for attentional models
             input_feed=args.att_type.lower() != 'none',
-            train_init=args.train_init)
+            train_init=args.train_init, reverse=args.reverse)
 
         losses, weights = ('ppl',), None
 
