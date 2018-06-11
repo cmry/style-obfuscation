@@ -226,8 +226,7 @@ if __name__ == '__main__':
                      hooks_per_epoch=args.hook)
 
     # - print hook
-    trainer.add_hook(
-        make_report_hook(valid, 5, conditional), hooks_per_epoch=args.hook)
+    trainer.add_hook(make_report_hook(valid, 5, conditional), hooks_per_epoch=args.hook)
 
     (best_model, valid_loss), _ = trainer.train(
         args.epochs, args.checkpoint, shuffle=True)

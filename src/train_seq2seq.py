@@ -1,4 +1,5 @@
 
+import copy
 import random
 
 from torch import optim
@@ -58,8 +59,8 @@ if __name__ == '__main__':
     parser.add_argument('--tt', action='store_true')
     parser.add_argument('--layers', default=1, type=int)
     parser.add_argument('--cell', default='LSTM', type=str)
-    parser.add_argument('--emb_dim', default=100, type=int)
-    parser.add_argument('--hid_dim', default=200, type=int)
+    parser.add_argument('--emb_dim', default=300, type=int)
+    parser.add_argument('--hid_dim', default=1000, type=int)
     parser.add_argument('--att_type', default='general', type=str)
     parser.add_argument('--deepout_layers', default=0, type=int)
     parser.add_argument('--tie_weights', action='store_true')
@@ -68,9 +69,9 @@ if __name__ == '__main__':
     # training
     parser.add_argument('--reverse', action='store_true')
     parser.add_argument('--epochs', default=5, type=int)
-    parser.add_argument('--batch_size', default=200, type=int)
+    parser.add_argument('--batch_size', default=50, type=int)
     parser.add_argument('--optim', default='Adam', type=str)
-    parser.add_argument('--lr', default=0.01, type=float)
+    parser.add_argument('--lr', default=0.001, type=float)
     parser.add_argument('--lr_schedule_epochs', type=int, default=1)
     parser.add_argument('--lr_schedule_factor', type=float, default=1)
     parser.add_argument('--max_norm', default=5., type=float)
@@ -82,7 +83,7 @@ if __name__ == '__main__':
     parser.add_argument('--word_dropout', default=0.0, type=float)
     parser.add_argument('--patience', default=2, type=int)
     parser.add_argument('--device', default='cpu')
-    parser.add_argument('--checkpoint', default=100, type=int)
+    parser.add_argument('--checkpoint', default=1000, type=int)
     parser.add_argument('--hook', default=1, type=int)
     parser.add_argument('--test', action='store_true', help="Don't save")
     args = parser.parse_args()
@@ -114,14 +115,14 @@ if __name__ == '__main__':
     train = PairedDataset(
         src, trg, dicts, batch_size=args.batch_size, device=args.device
     ).shuffle_()
-    train, valid = splits(test=None, dev=0.2)
+    train, valid = train.splits(test=None, dev=0.2)
 
     train.sort_(sort_by='trg')  # minimize padding
 
     print("Building model...")
     if args.grl:
         m = make_grl_rnn_encoder_decoder(
-            args.layers, args.emb_dim, args.hid_dim, d1, cell=args.cell,
+            args.layers, args.emb_dim, args.hid_dim, d, cell=args.cell,
             encoder_summary=args.encoder_summary, dropout=args.dropout,
             tie_weights=True, word_dropout=args.word_dropout,
             cond_dims=(args.emb_dim,), cond_vocabs=(len(conds_d),),
@@ -134,7 +135,7 @@ if __name__ == '__main__':
 
     else:
         m = make_rnn_encoder_decoder(
-            args.layers, args.emb_dim, args.hid_dim, d1, cell=args.cell,
+            args.layers, args.emb_dim, args.hid_dim, d, cell=args.cell,
             encoder_summary=args.encoder_summary, dropout=args.dropout,
             tie_weights=True, word_dropout=args.word_dropout,
             att_type=args.att_type,
@@ -164,8 +165,7 @@ if __name__ == '__main__':
     model_name = 'S2S.GRL{}.TT{}'.format(str(args.grl), str(args.tt))
     trainer = Trainer(
         m, {'train': train, 'valid': valid}, optimizer, losses=losses,
-        max_norm=args.max_norm, scheduler=scheduler, weights=weights,
-        checkpoint=Checkpoint(model_name, keep=3).setup(args, d=conds_d))
+        max_norm=args.max_norm, scheduler=scheduler, weights=weights)
 
     trainer.add_loggers(StdLogger())
 
@@ -181,8 +181,7 @@ if __name__ == '__main__':
                      hooks_per_epoch=args.hook)
 
     # - print hook
-    trainer.add_hook(
-        make_report_hook(valid, args.batch_size), hooks_per_epoch=args.hook)
+    trainer.add_hook(make_report_hook(valid, 5), hooks_per_epoch=args.hook)
 
     (best_model, valid_loss), _ = trainer.train(
         args.epochs, args.checkpoint, shuffle=True)
