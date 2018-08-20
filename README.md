@@ -4,7 +4,7 @@ presented at [COLING 2018](http://www.coling2018.org/). Code is released under t
 
 ```
 @inproceedings{emmery2018style,
-  title={Style Obfuscation by Invrariance},
+  title={Style Obfuscation by Invariance},
   author={Emmery, Chris and Manjavacas, Enrique and Chrupa{\l}a, Grzegorz},
   journal={COLING 2018},
   pages={984--996},
