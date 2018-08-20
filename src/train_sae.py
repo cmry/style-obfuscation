@@ -88,8 +88,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     # data
-    parser.add_argument('--basedir', default='/home/manjavacas/code/python/' +
-                        'style-obfuscation/data/bibles/')
+    parser.add_argument('--basedir', default='../data/bibles/')
     parser.add_argument('--max_size', type=int, default=100000)
     parser.add_argument('--max_length', type=int, default=100)
     parser.add_argument('--max_lines', type=int, default=1000000)
@@ -103,9 +102,7 @@ if __name__ == '__main__':
     parser.add_argument('--cond_emb', type=int, default=0)
     parser.add_argument('--train_init', action='store_true')
     parser.add_argument('--init_embeddings', action='store_true')
-    parser.add_argument('--embeddings_path',
-                        default='/home/corpora/word_embeddings/' +
-                        'glove.twitter.27B.100d.txt')
+    parser.add_argument('--embeddings_path', default='')
     # training
     parser.add_argument('--reverse', action='store_true')
     parser.add_argument('--dropout', type=float, default=0.25)

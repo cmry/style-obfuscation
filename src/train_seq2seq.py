@@ -50,8 +50,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     # data
-    parser.add_argument('--basedir', default='/home/manjavacas/code/python/' +
-                        'style-obfuscation/data/bibles/')
+    parser.add_argument('--basedir', default='../data/bibles/')
     parser.add_argument('--max_size', type=int, default=100000)
     parser.add_argument('--max_lines', type=int, default=1000000)
     # model
@@ -61,7 +60,7 @@ if __name__ == '__main__':
     parser.add_argument('--cell', default='LSTM', type=str)
     parser.add_argument('--emb_dim', default=300, type=int)
     parser.add_argument('--hid_dim', default=1000, type=int)
-    parser.add_argument('--att_type', default='general', type=str)
+    parser.add_argument('--att_type', default=None)
     parser.add_argument('--deepout_layers', default=0, type=int)
     parser.add_argument('--tie_weights', action='store_true')
     parser.add_argument('--train_init', action='store_true')
@@ -77,8 +76,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_norm', default=5., type=float)
     parser.add_argument('--init_embeddings', action='store_true')
     parser.add_argument('--embeddings_path',
-                        default='/home/corpora/word_embeddings/' +
-                        'glove.twitter.27B.100d.txt')
+                        default='')
     parser.add_argument('--dropout', default=0.25, type=float)
     parser.add_argument('--word_dropout', default=0.0, type=float)
     parser.add_argument('--patience', default=2, type=int)

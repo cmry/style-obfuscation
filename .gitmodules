@@ -1,0 +1,3 @@
+[submodule "src/seqmod"]
+	path = src/seqmod
+	url = https://github.com/emanjavacas/seqmod
